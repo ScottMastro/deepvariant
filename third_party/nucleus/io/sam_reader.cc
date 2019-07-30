@@ -345,6 +345,8 @@ tf::Status ParseAuxFields(const bam1_t* b, const SamReaderOptions& options,
 
 // Assign aligned_quality. Depending on the use_original_base_quality_scores
 // aligned_quality is read either from "QUAL" field or from "OQ" tag in SAM/BAM.
+// If missing_base_quality_score is set, missing base quality scores will
+// be set to this value.
 tf::Status AssignAlignedQuality(const bam1_t* b,
                                 const SamReaderOptions& options,
                                 Read* read_message) {
@@ -377,6 +379,18 @@ tf::Status AssignAlignedQuality(const bam1_t* b,
       }
     }
   }
+
+  int missing_quality=options.missing_base_quality_score();
+  if (missing_quality >= 0) {
+    // Set missing quality scores to default value.
+    RepeatedField<int32>* quality = read_message->mutable_aligned_quality();
+    quality->Reserve(c->l_qseq);
+    for (int i = 0; i < c->l_qseq; ++i) {
+      quality->Add(missing_quality);
+    }
+    return tf::Status::OK();
+  }
+
   return tf::Status(tensorflow::error::Code::NOT_FOUND,
                     "Could not read base quality scores");
 }

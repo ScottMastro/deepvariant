@@ -547,6 +547,11 @@ message DeepVariantOptions {
   // By default aligned_quality field is read from QUAL in SAM. If flag is set,
   // aligned_quality field is read from OQ tag in SAM.
   bool use_original_quality_scores = 29;
+
+  // If flag is set, missing base qualities will be set to this value.
+  int64 missing_quality_score = 30;
+  // Path to our source of noisy NGS reads.
+  string noisy_reads_filename = 31;
 }
 
 // Config describe information needed for a dataset that can be used for

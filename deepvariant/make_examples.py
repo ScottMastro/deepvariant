@@ -232,8 +232,14 @@ flags.DEFINE_bool(
     'If True, auxiliary fields of the SAM/BAM/CRAM records are parsed.')
 flags.DEFINE_bool('use_original_quality_scores', False,
                   'If True, base quality scores are read from OQ tag.')
-
-
+flags.DEFINE_integer(
+    'missing_quality_score', None,
+    'Missing base quality scores are set to this value.')
+flags.DEFINE_string(
+    'noisy_reads', None,
+    'Optional. Aligned, sorted, indexed BAM file containing noisy reads we do '
+    'not want to use to call alleles but we want to use to make final variant call.'
+    'Should be aligned to a reference genome compatible with --ref.')
 # ---------------------------------------------------------------------------
 # Option handling
 # ---------------------------------------------------------------------------
@@ -358,6 +364,8 @@ def default_options(add_flags=True, flags_obj=None):
       options.reference_filename = flags_obj.ref
     if flags_obj.reads:
       options.reads_filename = flags_obj.reads
+    if flags_obj.noisy_reads:
+      options.noisy_reads_filename = flags_obj.noisy_reads
     if flags_obj.confident_regions:
       options.confident_regions_filename = flags_obj.confident_regions
     if flags_obj.truth_variants:
@@ -490,6 +498,7 @@ def write_make_examples_run_info(run_info_proto, path):
 def _ensure_consistent_contigs(ref_contigs,
                                sam_contigs,
                                vcf_contigs,
+                               noisy_sam_contigs,
                                exclude_contig_names=None,
                                min_coverage_fraction=1.0):
   """Returns the common contigs after ensuring 'enough' overlap.
@@ -500,6 +509,8 @@ def _ensure_consistent_contigs(ref_contigs,
     sam_contigs: list of reference_pb2.ContigInfo protos in the SAM/BAM file.
     vcf_contigs: list of reference_pb2.ContigInfo protos in the VCF if in
       training mode, or None otherwise.
+    noisy_sam_contigs: list of reference_pb2.ContigInfo protos in the noisy 
+      SAM/BAM file if specified, or None otherwise.
     exclude_contig_names: list of strings of contig names to exclude from
       overlap consideration.
     min_coverage_fraction: The fraction of the reference contigs that must be
@@ -518,7 +529,8 @@ def _ensure_consistent_contigs(ref_contigs,
 
   # Compute the common contigs among our inputs, and check that the contigs are
   # sufficiently consistent among each other.
-  contigs = common_contigs(only_true(ref_contigs, sam_contigs, vcf_contigs))
+  contigs = common_contigs(only_true(ref_contigs, sam_contigs, 
+                                     vcf_contigs, noisy_sam_contigs))
   validate_reference_contig_coverage(ref_contigs, contigs,
                                      min_coverage_fraction)
   return contigs
@@ -741,6 +753,8 @@ class RegionProcessor(object):
     self.ref_reader = None
     self.sam_reader = None
     self.in_memory_sam_reader = None
+    self.noisy_sam_reader = None
+    self.noisy_in_memory_sam_reader = None
     self.realigner = None
     self.pic = None
     self.labeler = None
@@ -753,9 +767,9 @@ class RegionProcessor(object):
   def _encode_tensor(self, image_tensor):
     return image_tensor.tostring(), image_tensor.shape, 'raw'
 
-  def _make_sam_reader(self):
+  def _make_sam_reader(self, filename):
     return sam.SamReader(
-        self.options.reads_filename,
+        filename,
         ref_path=FLAGS.ref if FLAGS.use_ref_for_cram else None,
         read_requirements=self.options.read_requirements,
         parse_aux_fields=FLAGS.parse_sam_aux_fields,
@@ -763,7 +777,9 @@ class RegionProcessor(object):
         downsample_fraction=self.options.downsample_fraction,
         random_seed=self.options.random_seed,
         use_original_base_quality_scores=self.options
-        .use_original_quality_scores)
+        .use_original_quality_scores,
+        missing_base_quality_score=self.options
+        .missing_quality_score)
 
   def _initialize(self):
     """Initialize the resources needed for this work in the current env."""
@@ -771,14 +787,19 @@ class RegionProcessor(object):
       raise ValueError('Cannot initialize this object twice')
 
     self.ref_reader = fasta.IndexedFastaReader(self.options.reference_filename)
-    self.sam_reader = self._make_sam_reader()
+    self.sam_reader = self._make_sam_reader(self.options.reads_filename)
     self.in_memory_sam_reader = sam.InMemorySamReader([])
 
+    if self.options.noisy_reads_filename:
+      self.noisy_sam_reader = self._make_sam_reader(self.options.noisy_reads_filename)
+      self.noisy_in_memory_sam_reader = sam.InMemorySamReader([])
+    
     if self.options.realigner_enabled:
       self.realigner = realigner.Realigner(self.options.realigner_options,
                                            self.ref_reader)
     self.pic = pileup_image.PileupImageCreator(
         ref_reader=self.ref_reader,
+        #todo
         sam_reader=self.in_memory_sam_reader,
         options=self.options.pic_options)
 
@@ -885,6 +906,7 @@ class RegionProcessor(object):
       reads = utils.reservoir_sample(
           reads, self.options.max_reads_per_partition, random_for_region)
     reads = list(reads)
+
     if self.realigner:
       _, reads = self.realigner.realign_reads(reads, region)
     return reads
@@ -1022,6 +1044,9 @@ def processing_regions_from_options(options):
   ref_contigs = fasta.IndexedFastaReader(
       options.reference_filename).header.contigs
   sam_contigs = sam.SamReader(options.reads_filename).header.contigs
+  noisy_sam_contigs = None
+  if options.noisy_reads_filename:
+    noisy_sam_contigs = sam.SamReader(options.noisy_reads_filename).header.contigs
 
   # Add in confident regions and vcf_contigs if in training mode.
   vcf_contigs = None
@@ -1029,7 +1054,7 @@ def processing_regions_from_options(options):
     vcf_contigs = vcf.VcfReader(options.truth_variants_filename).header.contigs
 
   contigs = _ensure_consistent_contigs(ref_contigs, sam_contigs, vcf_contigs,
-                                       options.exclude_contigs,
+                                       noisy_sam_contigs, options.exclude_contigs,
                                        options.min_shared_contigs_basepairs)
   logging.info('Common contigs are %s', [c.name for c in contigs])
   calling_regions = build_calling_regions(ref_contigs, options.calling_regions,
@@ -1128,7 +1153,8 @@ def make_examples_runner(options):
       n_candidates += len(candidates)
       n_examples += len(examples)
       n_regions += 1
-
+      print("length of candidates list: " + str(len(candidates)))
+      print("length of examples list: " + str(len(examples)))
       writer.write_candidates(*candidates)
 
       # If we have any gvcf records, write them out. This if also serves to

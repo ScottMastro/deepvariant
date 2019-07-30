@@ -153,7 +153,8 @@ class NativeSamReader(genomics_reader.GenomicsReader):
                hts_block_size=None,
                downsample_fraction=None,
                random_seed=None,
-               use_original_base_quality_scores=False):
+               use_original_base_quality_scores=False,
+               missing_base_quality_score=None):
     """Initializes a NativeSamReader.
 
     Args:
@@ -184,7 +185,8 @@ class NativeSamReader(genomics_reader.GenomicsReader):
         needed. If None, a fixed random value will be assigned.
       use_original_base_quality_scores: optional bool, defaulting to False. If
         True, quality scores are read from OQ tag.
-
+      missing_base_quality_score: None or int >= 0. Missing quality scores are 
+      set to this value if not None.
     Raises:
       ValueError: If downsample_fraction is not None and not in the interval
         (0.0, 1.0].
@@ -219,6 +221,16 @@ class NativeSamReader(genomics_reader.GenomicsReader):
       if random_seed is None:
         # Fixed random seed produced with 'od -vAn -N4 -tu4 < /dev/urandom'.
         random_seed = 2928130004
+      
+
+      if missing_base_quality_score is None:
+        # We set to -1 indicating missing quality scores should not be filled
+        missing_base_quality_score=-1
+      elif missing_base_quality_score < 0:
+          raise ValueError(
+              'missing_base_quality_score must be >= 0',
+              missing_base_quality_score)
+
 
       self._reader = sam_reader.SamReader.from_file(
           input_path.encode('utf8'),
@@ -229,7 +241,8 @@ class NativeSamReader(genomics_reader.GenomicsReader):
               hts_block_size=(hts_block_size or 0),
               downsample_fraction=downsample_fraction,
               random_seed=random_seed,
-              use_original_base_quality_scores=use_original_base_quality_scores)
+              use_original_base_quality_scores=use_original_base_quality_scores,
+              missing_base_quality_score=missing_base_quality_score)
       )
 
       self.header = self._reader.header

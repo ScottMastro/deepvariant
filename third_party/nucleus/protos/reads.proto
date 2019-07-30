@@ -402,6 +402,8 @@ message SamReaderOptions {
   // By default aligned_quality field is read from QUAL in SAM. If flag is set,
   // aligned_quality field is read from OQ tag in SAM.
   bool use_original_base_quality_scores = 10;
+  // If flag is set, missing base qualities will be set to this value.
+  int64 missing_base_quality_score = 11;
 }
 
 // Describes requirements for a read for it to be returned by a SamReader.
